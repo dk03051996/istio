@@ -1,0 +1,223 @@
+Prerequisites
+Perform any necessary platform-specific setup.
+
+Check the Requirements for Pods and Services.
+
+Install the Helm client, version 3.6 or above.
+
+Configure the Helm repository:
+
+Run commands given below to add istio charts and give the name as istio
+
+
+helm repo add istio https://istio-release.storage.googleapis.com/charts
+helm repo update
+In-place Upgrade
+
+ 
+
+istioctl x precheck   # to check there is no issues with the cluster
+
+Upgrade the Kubernetes custom resource definitions (CRDs):
+
+$ kubectl apply -f manifests/charts/base/crds
+
+2. Upgrade the Istio base chart:
+
+
+$ helm upgrade istio-base manifests/charts/base -n istio-system --skip-crds
+3. Upgrade the Istio discovery chart:
+
+
+$ helm upgrade istiod istio/istiod -n istio-system --version 1.14.6
+4. (Optional) Upgrade and gateway charts installed in your cluster:
+
+
+$ helm upgrade istio-ingressgateway istio/gateway -n istio-system --version 1.14.6
+ 
+
+Canary upgrade (recommended)
+You can install a canary version of Istio control plane to validate that the new version is compatible with your existing configuration and data plane using the steps below:
+
+Prerequisites:
+
+Before upgrading Istio, it is recommended to run the istioctl x precheck command to make sure the upgrade is compatible with your environment.
+
+
+istioctl x precheck
+Note: if you face error of istioctl not found, run the following steps:
+
+Edit the istio version and architecture tha
+
+
+curl -L https://istio.io/downloadIstio | ISTIO_VERSION=1.14.6 TARGET_ARCH=x86_64 sh -
+go into the folder by cd command
+
+
+cd istio-1.14.6
+add istioctl client to your path
+
+
+export PATH=$PWD/bin:$PATH
+now run below command to check version and you will get output mentioned below.
+
+
+istioctl version
+
+client version: 1.14.6
+
+control plane version: 1.13.0
+
+data plane version: 1.13.0 (4 proxies)
+output shown above is described as: 
+
+client version as istioctl version
+
+control plane version is your istiod version i.e. cluster version
+
+data plane version is all the pods
+
+Now, go to folder istio-1.14.6
+
+Upgrade the Kubernetes custom resource definitions (CRDs):
+
+
+kubectl apply -f manifests/charts/base/crds
+Install a canary version of the Istio discovery chart by setting the revision value:
+
+In a production environment, a better revision name would correspond to the Istio version. However, you must replace . characters in the revision name, for example, revision=1-14-6 for Istio 1.14.6, because . is not a valid revision name character.
+
+
+helm install istiod-1-14-6 istio/istiod --set revision=1-14-6 --version 1.14.6 -n istio-system
+Verify that you have two versions of istiod installed in your cluster:
+
+
+ kubectl get pods -l app=istiod -L istio.io/rev -n istio-system
+  NAME                            READY   STATUS    RESTARTS   AGE   REV
+  istiod-5649c48ddc-dlkh8         1/1     Running   0          71m   default
+  istiod-1-14-6-9cc9fd96f-jpc7n   1/1     Running   0          34m   canary
+4. Before upgrading Istio, it is recommended to run the istioctl x precheck command to make sure the upgrade is compatible with your environment.
+
+
+ istioctl x precheck
+✔ No issues found when checking the cluster. Istio is safe to install or upgrade!
+  To get started, check out https://istio.io/latest/docs/setup/getting-started/
+Control plane:
+
+istioctl install --set revision=1-14-6
+After running the command, you will have two control plane deployments and services running side-by-side:
+
+
+
+ kubectl get pods -n istio-system -l app=istiod
+NAME                                    READY   STATUS    RESTARTS   AGE
+istiod-786779888b-p9s5n                 1/1     Running   0          114m
+istiod-1-14-6-6956db645c-vwhsk          1/1     Running   0          1m
+
+kubectl get svc -n istio-system -l app=istiod
+NAME            TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)                                                AGE
+istiod          ClusterIP   10.32.5.247   <none>        15010/TCP,15012/TCP,443/TCP,15014/TCP                  33d
+istiod-1-14-6   ClusterIP   10.32.6.58    <none>        15010/TCP,15012/TCP,443/TCP,15014/TCP,53/UDP,853/TCP   12m
+You will also see that there are two sidecar injector configurations including the new revision.
+
+
+$ kubectl get mutatingwebhookconfigurations
+NAME                            WEBHOOKS   AGE
+istio-sidecar-injector          1          7m56s
+istio-sidecar-injector-1-14-6   1          3m18s
+We will use this to label the namespace.
+
+Data plane (where all the configuration of service pod resides)
+Unlike istiod, Istio gateways do not run revision-specific instances, but are instead in-place upgraded to use the new control plane revision. You can verify that the istio-ingress gateway is using the canary revision by running the following command:
+
+
+$ istioctl proxy-status
+However, simply installing the new revision has no impact on the existing sidecar proxies. To upgrade these, you must configure them to point to the new istiod-canary control plane. This is controlled during sidecar injection based on the namespace label istio.io/rev=1-14-6.
+
+To upgrade the namespace sor, remove the istio-injection label, and add the istio.io/rev=1-14-6 label to point to the canary revision. The istio-injection label must be removed because it takes precedence over the istio.io/rev=1-14-6 label for backward compatibility.
+
+
+$ kubectl label namespace sor istio-injection- istio.io/rev=1-14-6
+After the namespace updates, you need to restart the pods to trigger re-injection. One way to do this is using:
+
+
+$ kubectl rollout restart deployment -n sor
+When the pods are re-injected, they will be configured to point to the istiod-canary control plane. You can verify this by looking at the pod labels.
+
+For example, the following command will show all the pods using the canary revision:
+
+
+$ kubectl get pods -n sor -l istio.io/rev=canary
+To verify that the new pods in the test-ns namespace are using the istiod-canary service corresponding to the canary revision, select one newly created pod and use the pod_name in the following command:
+
+
+$ istioctl proxy-status 
+list out pods with istiod version they are using
+
+5. Once you have verified and migrated your workloads to use the canary control plane, you can uninstall your old control plane:
+
+
+ helm delete istiod -n istio-system
+6. Upgrade the Istio base chart, making the new revision the default.
+
+
+ helm upgrade istio-base istio/base --set defaultRevision=1-14-6 -n istio-system --skip-crds --version 1.14.6
+
+helm upgrade istiod istio/istiod --set defaultRevision=1-14-6 -n istio-system  --version 1.14.6
+
+helm upgrade istio-ingressgateway istio/gateway --set defaultRevision=1-14-6 -n istio-system  --version 1.14.6
+when we run above command we get following error
+
+
+Error: UPGRADE FAILED: values don't meet the specifications of the schema(s) in the following chart(s):
+
+gateway:
+
+(root): Additional property defaultRevision is not allowed
+
+we run again with without revision 
+
+
+helm upgrade istio-ingressgateway istio/gateway -n istio-system  --version 1.14.6
+Now our default istiod, base, ingress-gateway is redirecting to version 1.14.6 and it is running smoothly.
+
+We need to test the application that all traffic is coming to new istiod and all services are running as expected.
+
+Now we can delete the canary version that we have deployed to test that this version will work as expected.
+
+Few steps are missing in the official documentation related to deleting the previous one and install using the istioctl command.
+
+Going Back to Previous Version if It doesn’t work as expected.
+When we are running istioctl install  revision=1-14-6 command to install the version, it is installing the fresh istiod and istio-ingressgateway with same revision name and get upgraded/install to specific version that istioctl is using.
+
+If anything goes wrong and it doesn’t work as expected, so we have our istiod with old/default version running but istio-ingressgateway has been upgraded to 1.14.6.
+
+We tried to revert it back to istio-1.13.0 using command mentioned below.
+
+
+helm delete istiod-1-14-6 -n istio-system
+It will delete the canary version of istiod that we have installed
+
+Now, we try to degrade the version of istio-ingressgateway by below command.
+
+
+helm upgrade istio-ingressgateway istio/gateway  -n istio-system  --version 1.13.0
+now we can see from helm ls -n istio-system command the app version has been degarded to 1.13.0 but if we use kubectl describe pod command for istio-ingressgateway and check that it is still pointing to 1.14.6.
+
+Step 2: We tried deleting the current ingressgateway and try to do the fresh install using the same command.
+
+
+helm delete istio-ingressgateway -n istio-system
+
+helm upgrade istio-ingressgateway istio/gateway -n istio-system  --version 1.13.0
+Now, we went again using kubectl describe pod command to check version of ingress but it is still pointing to 1.14.6
+
+It is because documentation does not explain the correct way to upgrade using the canary approach.
+
+As per the 1.14 upgrade documentation, ingress cannot run as canary deployment.
+
+Now, next 2 options we need to try.
+
+1 . Either destroying and installing the upgrade version like inplace upgrade and check if everything is working as expected
+
+2. We got one updated documentation for 1.17.2 that explains about deploying ingress as canary version along with istiod. We will check this process as well.
